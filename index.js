@@ -13,7 +13,7 @@ import fs from "fs";
 dotenv.config();
 const app = express();
 app.use(cors());
-app.use(express.json()); // parse JSON bodies
+app.use(express.json());
 
 // --- static uploads folder ---
 const __filename = fileURLToPath(import.meta.url);
@@ -55,7 +55,7 @@ const ReportSchema = new mongoose.Schema({
   latitude: Number,
   longitude: Number,
   address: String,
-  photoUrl: String, // full URL to access
+  photoUrl: String,
   createdAt: { type: Date, default: Date.now },
 });
 const Report = mongoose.model("Report", ReportSchema);
@@ -90,7 +90,7 @@ const authMiddleware = async (req, res, next) => {
     if (!user)
       return res.status(401).json({ error: "Invalid token (user not found)" });
 
-    req.user = user; // attach user
+    req.user = user;
     next();
   } catch (err) {
     return res
@@ -100,7 +100,6 @@ const authMiddleware = async (req, res, next) => {
 };
 
 // --- Routes ---
-
 app.get("/", (req, res) => res.send("CivicLens backend running ✅"));
 
 // AUTH: register
@@ -118,8 +117,7 @@ app.post("/api/auth/register", async (req, res) => {
     await user.save();
 
     const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: "7d" });
-    const safeUser = { id: user._id, name: user.name, email: user.email, createdAt: user.createdAt };
-    res.json({ token, user: safeUser });
+    res.json({ token, user: { id: user._id, name: user.name, email: user.email } });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error", details: err.message });
@@ -139,8 +137,7 @@ app.post("/api/auth/login", async (req, res) => {
     if (!ok) return res.status(400).json({ error: "Invalid credentials" });
 
     const token = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: "7d" });
-    const safeUser = { id: user._id, name: user.name, email: user.email, createdAt: user.createdAt };
-    res.json({ token, user: safeUser });
+    res.json({ token, user: { id: user._id, name: user.name, email: user.email } });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error", details: err.message });
@@ -175,12 +172,8 @@ app.post("/api/reports", authMiddleware, upload.single("photo"), async (req, res
     });
 
     await report.save();
-    await report.populate("user", "name email");
-    const reports = await Report.find()
-    .sort({ createdAt: -1 })
-    .populate("user", "name email");
-
-    res.json({ success: true, report });
+    await report.populate("user", "name email");  // 👈 ensures response has name + email
+    res.status(201).json({ success: true, report });
   } catch (err) {
     console.error("Report creation error:", err);
     res.status(500).json({ error: "Server error", details: err.message });
@@ -192,7 +185,7 @@ app.get("/api/reports", async (req, res) => {
   try {
     const reports = await Report.find()
       .sort({ createdAt: -1 })
-      .populate("user", "name email");
+      .populate("user", "name email");  // 👈 populate with user info
     res.json(reports);
   } catch (err) {
     res.status(500).json({ error: "Server error", details: err.message });
@@ -202,7 +195,9 @@ app.get("/api/reports", async (req, res) => {
 // Get current user's reports (protected)
 app.get("/api/reports/mine", authMiddleware, async (req, res) => {
   try {
-    const reports = await Report.find({ user: req.user._id }).sort({ createdAt: -1 });
+    const reports = await Report.find({ user: req.user._id })
+      .sort({ createdAt: -1 })
+      .populate("user", "name email");  // 👈 include name + email
     res.json(reports);
   } catch (err) {
     res.status(500).json({ error: "Server error", details: err.message });
