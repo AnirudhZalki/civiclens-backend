@@ -176,6 +176,10 @@ app.post("/api/reports", authMiddleware, upload.single("photo"), async (req, res
 
     await report.save();
     await report.populate("user", "name email");
+    const reports = await Report.find()
+    .sort({ createdAt: -1 })
+    .populate("user", "name email");
+
     res.json({ success: true, report });
   } catch (err) {
     console.error("Report creation error:", err);
