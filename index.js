@@ -8,32 +8,43 @@ import jwt from "jsonwebtoken";
 import multer from "multer";
 import path from "path";
 import { fileURLToPath } from "url";
+import fs from "fs";
 
 dotenv.config();
 const app = express();
 app.use(cors());
-app.use(express.json()); // parse json bodies
+app.use(express.json()); // parse JSON bodies
 
 // --- static uploads folder ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const uploadsDir = path.join(__dirname, "uploads");
+
+// Ensure uploads folder exists
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir);
+}
+
 app.use("/uploads", express.static(uploadsDir));
 
 // --- MongoDB connect ---
-mongoose.connect(process.env.MONGO_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-.then(()=>console.log("✅ MongoDB connected"))
-.catch(err=>{ console.error("❌ Mongo connect error:", err); process.exit(1); });
+mongoose
+  .connect(process.env.MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  })
+  .then(() => console.log("✅ MongoDB connected"))
+  .catch((err) => {
+    console.error("❌ Mongo connect error:", err);
+    process.exit(1);
+  });
 
 // --- Models ---
 const UserSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true }, // hashed
-  createdAt: { type: Date, default: Date.now }
+  createdAt: { type: Date, default: Date.now },
 });
 const User = mongoose.model("User", UserSchema);
 
@@ -45,7 +56,7 @@ const ReportSchema = new mongoose.Schema({
   longitude: Number,
   address: String,
   photoUrl: String, // full URL to access
-  createdAt: { type: Date, default: Date.now }
+  createdAt: { type: Date, default: Date.now },
 });
 const Report = mongoose.model("Report", ReportSchema);
 
@@ -54,27 +65,37 @@ const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadsDir),
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname);
-    cb(null, Date.now() + "-" + Math.round(Math.random()*1e9) + ext);
-  }
+    cb(null, Date.now() + "-" + Math.round(Math.random() * 1e9) + ext);
+  },
 });
-const upload = multer({ storage });
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB max
+});
 
 // --- Auth helpers ---
 const JWT_SECRET = process.env.JWT_SECRET || "replace_this_secret";
+
 const authMiddleware = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization || "";
-    const token = authHeader.startsWith("Bearer ") ? authHeader.split(" ")[1] : null;
+    const token = authHeader.startsWith("Bearer ")
+      ? authHeader.split(" ")[1]
+      : null;
+
     if (!token) return res.status(401).json({ error: "No token" });
 
     const payload = jwt.verify(token, JWT_SECRET);
     const user = await User.findById(payload.id).select("-password");
-    if (!user) return res.status(401).json({ error: "Invalid token (user not found)" });
+    if (!user)
+      return res.status(401).json({ error: "Invalid token (user not found)" });
 
     req.user = user; // attach user
     next();
   } catch (err) {
-    return res.status(401).json({ error: "Invalid/expired token", details: err.message });
+    return res
+      .status(401)
+      .json({ error: "Invalid/expired token", details: err.message });
   }
 };
 
@@ -86,7 +107,8 @@ app.get("/", (req, res) => res.send("CivicLens backend running ✅"));
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { name, email, password } = req.body || {};
-    if (!name || !email || !password) return res.status(400).json({ error: "Missing fields" });
+    if (!name || !email || !password)
+      return res.status(400).json({ error: "Missing fields" });
 
     const existing = await User.findOne({ email });
     if (existing) return res.status(400).json({ error: "Email already registered" });
@@ -130,9 +152,11 @@ app.get("/api/auth/me", authMiddleware, async (req, res) => {
   res.json({ user: req.user });
 });
 
-// REPORTS: submit (protected) — note middleware order: auth then multer
+// REPORTS: submit (protected)
 app.post("/api/reports", authMiddleware, upload.single("photo"), async (req, res) => {
   try {
+    if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+
     const { title, description, latitude, longitude, address } = req.body || {};
     if (!title) return res.status(400).json({ error: "Title required" });
 
@@ -144,33 +168,34 @@ app.post("/api/reports", authMiddleware, upload.single("photo"), async (req, res
       user: req.user._id,
       title,
       description,
-      latitude: latitude ? parseFloat(latitude) : undefined,
-      longitude: longitude ? parseFloat(longitude) : undefined,
+      latitude: latitude ? Number(latitude) : null,
+      longitude: longitude ? Number(longitude) : null,
       address,
-      photoUrl
+      photoUrl,
     });
 
     await report.save();
-    // populate user minimal info in response
     await report.populate("user", "name email");
     res.json({ success: true, report });
   } catch (err) {
-    console.error(err);
+    console.error("Report creation error:", err);
     res.status(500).json({ error: "Server error", details: err.message });
   }
 });
 
-// Get all reports (public) — with user info
+// Get all reports (public)
 app.get("/api/reports", async (req, res) => {
   try {
-    const reports = await Report.find().sort({ createdAt: -1 }).populate("user", "name email");
+    const reports = await Report.find()
+      .sort({ createdAt: -1 })
+      .populate("user", "name email");
     res.json(reports);
   } catch (err) {
     res.status(500).json({ error: "Server error", details: err.message });
   }
 });
 
-// Get only current user's reports (protected)
+// Get current user's reports (protected)
 app.get("/api/reports/mine", authMiddleware, async (req, res) => {
   try {
     const reports = await Report.find({ user: req.user._id }).sort({ createdAt: -1 });
@@ -181,4 +206,4 @@ app.get("/api/reports/mine", authMiddleware, async (req, res) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, ()=>console.log(`Server running on ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
