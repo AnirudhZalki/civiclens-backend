@@ -6,27 +6,13 @@ import cors from "cors";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import multer from "multer";
-import path from "path";
-import { fileURLToPath } from "url";
-import fs from "fs";
-import { v2 as cloudinary } from 'cloudinary';
+import { v2 as cloudinary } from "cloudinary";
+import { CloudinaryStorage } from "multer-storage-cloudinary";
 
 dotenv.config();
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-// --- static uploads folder ---
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const uploadsDir = path.join(__dirname, "uploads");
-
-// Ensure uploads folder exists
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir);
-}
-
-app.use("/uploads", express.static(uploadsDir));
 
 // --- MongoDB connect ---
 mongoose
@@ -61,18 +47,22 @@ const ReportSchema = new mongoose.Schema({
 });
 const Report = mongoose.model("Report", ReportSchema);
 
-// --- Multer for file uploads ---
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadsDir),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, Date.now() + "-" + Math.round(Math.random() * 1e9) + ext);
+// --- Cloudinary config ---
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+// --- Multer with Cloudinary storage ---
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: "civiclens_reports", // auto-created in Cloudinary
+    allowed_formats: ["jpg", "png", "jpeg"],
   },
 });
-const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB max
-});
+const upload = multer({ storage });
 
 // --- Auth helpers ---
 const JWT_SECRET = process.env.JWT_SECRET || "replace_this_secret";
@@ -125,48 +115,6 @@ app.post("/api/auth/register", async (req, res) => {
   }
 });
 
-
-(async function() {
-
-    // Configuration
-    cloudinary.config({ 
-        cloud_name: 'dkqolkjkj', 
-        api_key: '761236341592443', 
-        api_secret: '**********' // Click 'View API Keys' above to copy your API secret
-    });
-    
-    // Upload an image
-     const uploadResult = await cloudinary.uploader
-       .upload(
-           'https://res.cloudinary.com/demo/image/upload/getting-started/shoes.jpg', {
-               public_id: 'shoes',
-           }
-       )
-       .catch((error) => {
-           console.log(error);
-       });
-    
-    console.log(uploadResult);
-    
-    // Optimize delivery by resizing and applying auto-format and auto-quality
-    const optimizeUrl = cloudinary.url('shoes', {
-        fetch_format: 'auto',
-        quality: 'auto'
-    });
-    
-    console.log(optimizeUrl);
-    
-    // Transform the image: auto-crop to square aspect_ratio
-    const autoCropUrl = cloudinary.url('shoes', {
-        crop: 'auto',
-        gravity: 'auto',
-        width: 500,
-        height: 500,
-    });
-    
-    console.log(autoCropUrl);    
-})();
-
 // AUTH: login
 app.post("/api/auth/login", async (req, res) => {
   try {
@@ -200,9 +148,8 @@ app.post("/api/reports", authMiddleware, upload.single("photo"), async (req, res
     const { title, description, latitude, longitude, address } = req.body || {};
     if (!title) return res.status(400).json({ error: "Title required" });
 
-    const photoUrl = req.file
-      ? `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`
-      : null;
+    // Cloudinary auto uploads → URL is available in req.file.path
+    const photoUrl = req.file?.path || null;
 
     const report = new Report({
       user: req.user._id,
@@ -215,7 +162,7 @@ app.post("/api/reports", authMiddleware, upload.single("photo"), async (req, res
     });
 
     await report.save();
-    await report.populate("user", "name email");  // 👈 ensures response has name + email
+    await report.populate("user", "name email"); // include user info
     res.status(201).json({ success: true, report });
   } catch (err) {
     console.error("Report creation error:", err);
@@ -228,7 +175,7 @@ app.get("/api/reports", async (req, res) => {
   try {
     const reports = await Report.find()
       .sort({ createdAt: -1 })
-      .populate("user", "name email");  // 👈 populate with user info
+      .populate("user", "name email");
     res.json(reports);
   } catch (err) {
     res.status(500).json({ error: "Server error", details: err.message });
@@ -240,7 +187,7 @@ app.get("/api/reports/mine", authMiddleware, async (req, res) => {
   try {
     const reports = await Report.find({ user: req.user._id })
       .sort({ createdAt: -1 })
-      .populate("user", "name email");  // 👈 include name + email
+      .populate("user", "name email");
     res.json(reports);
   } catch (err) {
     res.status(500).json({ error: "Server error", details: err.message });
